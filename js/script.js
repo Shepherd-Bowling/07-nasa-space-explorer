@@ -204,7 +204,7 @@ form.addEventListener('submit', async (event) => {
     statusMessage.textContent = items.length ? 'Select any discovery to read its story.' : 'No entries were found. Try another date range.';
   } catch (error) {
     statusMessage.textContent = error.name === 'AbortError'
-      ? 'NASA took too long to respond. Please try a shorter date range.'
+      ? 'NASA took too long to respond. Please try a smaller date range.'
       : error instanceof TypeError ? 'Unable to connect to NASA. Check your internet connection and try again.' : error.message;
   } finally {
     clearTimeout(timeout);
