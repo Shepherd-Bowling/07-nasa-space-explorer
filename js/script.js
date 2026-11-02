@@ -2,8 +2,17 @@
 const startInput = document.getElementById('startDate');
 const endInput = document.getElementById('endDate');
 setupDateInputs(startInput, endInput);
+// The starter uses UTC; use the visitor's local day to avoid requesting tomorrow.
+const localNow = new Date();
+const localToday = `${localNow.getFullYear()}-${String(localNow.getMonth() + 1).padStart(2, '0')}-${String(localNow.getDate()).padStart(2, '0')}`;
+startInput.max = localToday;
+endInput.max = localToday;
+if (endInput.value > localToday) endInput.value = localToday;
+startInput.addEventListener('change', () => {
+  if (endInput.value > localToday) endInput.value = localToday;
+});
 
-const apiKey = 'zq67Jm7WkDkL7WLtrQdHPMkWhq6ntGfPGwW6HJTR';
+// NASA’s current public APOD endpoint does not require an API key.
 const form = document.getElementById('dateForm');
 const gallery = document.getElementById('gallery');
 const statusMessage = document.getElementById('status');
@@ -11,6 +20,7 @@ const searchButton = document.getElementById('searchButton');
 const resultCount = document.getElementById('resultCount');
 const modal = document.getElementById('photoModal');
 const modalMedia = document.getElementById('modalMedia');
+statusMessage.textContent = 'Choose a date range to explore NASA’s archive.';
 
 const facts = [
   'Sunlight takes about eight minutes to travel from the Sun to Earth.',
@@ -52,6 +62,51 @@ function makeImage(url, title) {
   return image;
 }
 
+// NASA's current API uses url for the ARTICLE and hdurl for the IMAGE.
+// Parse HTML in an inert document and display only its text, never execute it.
+function normalizeEntry(entry) {
+  const parser = new DOMParser();
+  const basic = parser.parseFromString(entry.basic_html || '', 'text/html');
+  const plainText = (value) => parser.parseFromString(value || '', 'text/html').body.textContent.trim();
+  const isVideo = ['video', 'iframe'].includes(entry.media_type);
+  const embedded = basic.querySelector('iframe[src], video[src], video source[src]');
+  const image = safeUrl(entry.hdurl) || safeUrl(basic.querySelector('img')?.getAttribute('src'));
+  return {
+    ...entry,
+    title: plainText(entry.title),
+    explanation: plainText(entry.explanation),
+    copyright: plainText(entry.copyright || entry.credit),
+    media_type: isVideo ? 'video' : 'image',
+    url: isVideo ? safeUrl(embedded?.getAttribute('src')) || safeUrl(entry.permalink || entry.url) : image,
+    hdurl: isVideo ? '' : image,
+    thumbnail_url: isVideo ? image : ''
+  };
+}
+
+async function fetchEntries(start, end, signal) {
+  const items = [];
+  // New NASA date filters use YYMMDD. Each page contains at most 25 entries.
+  for (let page = 1; ; page++) {
+    const url = new URL('https://science.nasa.gov/wp-json/wp/v2/apod-basic');
+    url.search = new URLSearchParams({
+      date_from: start.replaceAll('-', '').slice(2),
+      date_to: end.replaceAll('-', '').slice(2),
+      per_page: '25', page: String(page)
+    });
+    const response = await fetch(url, { signal });
+    if (!response.ok) {
+      if (response.status === 429) throw new Error('NASA’s request limit was reached. Please try again later.');
+      throw new Error('NASA could not load that date range. Please try again or choose a shorter range.');
+    }
+    const batch = await response.json();
+    if (!Array.isArray(batch)) throw new Error('NASA returned an unexpected response. Please try again.');
+    items.push(...batch.filter(item => item.date >= start && item.date <= end).map(normalizeEntry));
+    const totalPages = Number(response.headers.get('X-WP-TotalPages'));
+    if (batch.length < 25 || (totalPages > 0 && page >= totalPages)) break;
+  }
+  return items;
+}
+
 function openDetails(item) {
   modalMedia.replaceChildren();
   const imageUrl = safeUrl(item.hdurl) || safeUrl(item.url);
@@ -83,6 +138,7 @@ modal.addEventListener('click', (event) => {
   if (event.clientX < bounds.left || event.clientX > bounds.right ||
       event.clientY < bounds.top || event.clientY > bounds.bottom) modal.close();
 });
+
 modal.addEventListener('close', () => modalMedia.replaceChildren());
 
 function displayGallery(items) {
@@ -143,18 +199,7 @@ form.addEventListener('submit', async (event) => {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 45000);
   try {
-    const url = new URL('https://api.nasa.gov/planetary/apod');
-    url.search = new URLSearchParams({
-      api_key: apiKey, start_date: startInput.value, end_date: endInput.value, thumbs: 'true'
-    });
-    const response = await fetch(url, { signal: controller.signal });
-    if (!response.ok) {
-      if (response.status === 429) throw new Error('NASA’s request limit was reached. Please try again later.');
-      if (response.status === 403) throw new Error('NASA could not authorize the API key. Please check the key in script.js.');
-      throw new Error('NASA could not load that date range. Try an earlier end date or a shorter range.');
-    }
-    const items = await response.json();
-    if (!Array.isArray(items)) throw new Error('NASA returned an unexpected response. Please try again.');
+    const items = await fetchEntries(startInput.value, endInput.value, controller.signal);
     displayGallery(items);
     statusMessage.textContent = items.length ? 'Select any discovery to read its story.' : 'No entries were found. Try another date range.';
   } catch (error) {
@@ -167,3 +212,6 @@ form.addEventListener('submit', async (event) => {
     searchButton.disabled = false;
   }
 });
+
+// Load the default date range immediately, then allow further searches with the form.
+form.requestSubmit();
